@@ -1,0 +1,86 @@
+name: Kanko NO_DUCK (Windows x64 Release)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64-release:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 350
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      WRAPPER_TAG: libwebrtc.m150.7871.07
+      WRAPPER_SHA: 4515f9ccdca75e2454e204f326f1d7129cad678e
+      # Historical M150 candidate. The exact source of the .07 release is unverified.
+      WEBRTC_SHA: a545de45259b47dfac5f3635863e47cb601f1bb2
+    steps:
+      - name: Checkout fork workflow and patch scripts
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Check available disk and prepare pinned wrapper
+        run: |
+          $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:GITHUB_WORKSPACE))
+          Write-Host ('Workspace volume {0}: {1:N1} GiB free' -f $drive.Name, ($drive.AvailableFreeSpace / 1GB))
+          if ($drive.AvailableFreeSpace -lt 14GB) {
+            throw 'Less than 14 GiB free before sync. Use a Windows runner with more disk.'
+          }
+          if ($drive.AvailableFreeSpace -lt 30GB) {
+            Write-Warning 'Less than 30 GiB free. The Windows x64 build may exhaust disk. No runner components will be removed.'
+          }
+          git clone --depth 1 --branch $env:WRAPPER_TAG https://github.com/webrtc-sdk/libwebrtc.git webrtc-work/libwebrtc
+          if ($LASTEXITCODE -ne 0) { throw 'Official wrapper clone failed.' }
+          $head = git -C webrtc-work/libwebrtc rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $head -ne $env:WRAPPER_SHA) { throw "Wrapper SHA mismatch: $head" }
+
+      - name: Build the patched Windows x64 Release DLL
+        run: |
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\patches\Build-WebRtcM150NoDuck.ps1 -WebRtcCommit $env:WEBRTC_SHA -Build
+          if ($LASTEXITCODE -ne 0) { throw "NO_DUCK build failed ($LASTEXITCODE). Inspect the failing step above." }
+
+      - name: Verify artifact and record build inputs
+        run: |
+          $artifact = 'webrtc-work/libwebrtc/build/libwebrtc-x64-release'
+          $dll = Join-Path $artifact 'lib/libwebrtc.dll'
+          $import = Join-Path $artifact 'lib/libwebrtc.dll.lib'
+          $headers = @(Get-ChildItem (Join-Path $artifact 'include') -Filter '*.h' -Recurse -File)
+          if (!$headers.Count) { throw 'Wrapper headers missing.' }
+          if (!(Test-Path (Join-Path $artifact 'LICENSE') -PathType Leaf)) { throw 'Wrapper license missing.' }
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path $dll).Path)
+          if (![Text.Encoding]::ASCII.GetString($bytes).Contains('Kanko WASAPI ducking flow=eRender SetDuckingOptions HRESULT=')) {
+            throw 'NO_DUCK diagnostic marker missing from DLL. Check the SDK interface and render patch.'
+          }
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes, ($pe + 4)) -ne 0x8664) {
+            throw 'Expected an x64 PE DLL.'
+          }
+          @(
+            "wrapper_tag=$env:WRAPPER_TAG"
+            "wrapper_sha=$env:WRAPPER_SHA"
+            "webrtc_sha=$env:WEBRTC_SHA (historical M150 candidate)"
+            "runner_image=$env:ImageOS $env:ImageVersion"
+            "run=$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          ) | Set-Content (Join-Path $artifact 'build-info.txt') -Encoding ascii
+          Get-FileHash $dll, $import -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash)  lib/$(Split-Path $_.Path -Leaf)"
+          } | Set-Content (Join-Path $artifact 'SHA256SUMS.txt') -Encoding ascii
+
+      - name: Upload Windows x64 Release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kanko-libwebrtc-no-duck-win-x64-release
+          path: webrtc-work/libwebrtc/build/libwebrtc-x64-release/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Report remaining disk
+        if: always()
+        run: |
+          $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:GITHUB_WORKSPACE))
+          Write-Host ('Workspace volume {0}: {1:N1} GiB free' -f $drive.Name, ($drive.AvailableFreeSpace / 1GB))
