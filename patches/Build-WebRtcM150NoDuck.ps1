@@ -59,7 +59,7 @@ if /i not "!actual_webrtc_sha!"=="$WebRtcCommit" (
   )
 )
 "@
-$source = [regex]::Replace($source, '(?im)^(cd src\r?\nif errorlevel 1 exit /b 1)', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value + "\`r\`n" + $pinCheck })
+$source = [regex]::Replace($source, '(?im)^(cd src\r?\nif errorlevel 1 exit /b 1)', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value + "`r`n" + $pinCheck })
 $source = $source -replace '(?im)^(\s*--args="[^\r\n]*")\r?$', ('$1' + "`r`nif errorlevel 1 exit /b 1")
 Write-Output $source
 if (!$Build) { return }
