@@ -42,7 +42,24 @@ $source = [regex]::Replace($source, '(?im)^(pushd src|cd src|call git checkout -
 $source = $source -replace '(?im)^@echo off', ('@echo off' + "`r`ncd /d `"%~dp0`" || exit /b 1")
 $source = [regex]::Replace($source, $anchor, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $insertion + "`r`n" + $m.Value })
 $source = [regex]::Replace($source, '(?im)^(call (?:git apply|gclient\.bat sync)[^\r\n]*)', '$1' + "`r`nif errorlevel 1 exit /b 1")
-$source = [regex]::Replace($source, '(?im)^(cd src\r?\nif errorlevel 1 exit /b 1)', ('$1' + "`r`ngit rev-parse HEAD | findstr /i /x /c:`"$WebRtcCommit`" >nul || exit /b 1"))
+# gclient may alter the root checkout even when --revision is requested.
+# Report the actual commit and make the pinned checkout explicit before applying wrapper patches.
+$pinCheck = @"
+for /f "delims=" %%H in ('git rev-parse HEAD') do set "actual_webrtc_sha=%%H"
+echo Kanko: WebRTC SHA after gclient sync: !actual_webrtc_sha!
+if /i not "!actual_webrtc_sha!"=="$WebRtcCommit" (
+  echo Kanko: Source checkout drift detected, restoring pinned commit.
+  call git checkout -f "$WebRtcCommit"
+  if errorlevel 1 exit /b 1
+  for /f "delims=" %%H in ('git rev-parse HEAD') do set "actual_webrtc_sha=%%H"
+  echo Kanko: WebRTC SHA after restore: !actual_webrtc_sha!
+  if /i not "!actual_webrtc_sha!"=="$WebRtcCommit" (
+    echo ERROR: Unable to restore pinned WebRTC commit $WebRtcCommit
+    exit /b 1
+  )
+)
+"@
+$source = [regex]::Replace($source, '(?im)^(cd src\r?\nif errorlevel 1 exit /b 1)', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value + "\`r\`n" + $pinCheck })
 $source = $source -replace '(?im)^(\s*--args="[^\r\n]*")\r?$', ('$1' + "`r`nif errorlevel 1 exit /b 1")
 Write-Output $source
 if (!$Build) { return }
