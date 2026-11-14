@@ -2,6 +2,10 @@ name: Kanko NO_DUCK (Windows x64 Release)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/kanko-no-duck.yml
 
 permissions:
   contents: read
